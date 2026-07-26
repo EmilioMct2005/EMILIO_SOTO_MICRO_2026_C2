@@ -1,314 +1,208 @@
-#ifndef CONFIG_H
-#define CONFIG_H
-
-//---------------------- WIFI ----------------------//
-#define WIFI_SSID      "TU_WIFI"
-#define WIFI_PASSWORD  "TU_PASSWORD"
-
-//---------------------- MQTT ----------------------//
-#define MQTT_SERVER    "192.168.1.100"
-#define MQTT_PORT      1883
-
-#define TOPIC_CONTROL  "carro/control"
-#define TOPIC_STATUS   "carro/status"
-
-//---------------------- OLED ----------------------//
-#define SCREEN_WIDTH 128
-#define SCREEN_HEIGHT 64
-
-//---------------------- JOYSTICKS ----------------------//
-
-#define LX_PIN 34
-#define LY_PIN 35
-
-#define RX_PIN 32
-#define RY_PIN 33
-
-//---------------------- BOTONES ----------------------//
-
-#define L1_PIN 25
-#define L2_PIN 26
-
-#define R1_PIN 27
-#define R2_PIN 14
-
-#define A_PIN 4
-#define B_PIN 16
-#define X_PIN 17
-#define Y_PIN 5
-
-#define DEADZONE 5
-
-#endif
-
 #include <WiFi.h>
 #include <PubSubClient.h>
 #include <Wire.h>
+#include <MPU6050.h>
+#include <LiquidCrystal_I2C.h>
 
-#include <Adafruit_GFX.h>
-#include <Adafruit_SSD1306.h>
-#include <Adafruit_MPU6050.h>
-#include <Adafruit_Sensor.h>
+/*=========================
+    CONFIGURACIÓN WIFI
+=========================*/
+const char* WIFI_NAME = "TU_SSID";
+const char* WIFI_PASS = "TU_PASSWORD";
+const char* MQTT_HOST = "test.mosquitto.org";
 
-#include <ArduinoJson.h>
+WiFiClient wifiClient;
+PubSubClient mqtt(wifiClient);
 
-#include "config.h"
+/*=========================
+      OBJETOS
+=========================*/
+MPU6050 sensorIMU;
+LiquidCrystal_I2C pantalla(0x27, 16, 2);
 
-WiFiClient espClient;
-PubSubClient mqtt(espClient);
+/*=========================
+      PINES
+=========================*/
+const uint8_t JOY_A_X = 4;
+const uint8_t JOY_A_Y = 5;
+const uint8_t JOY_B_X = 6;
+const uint8_t JOY_B_Y = 7;
 
-Adafruit_SSD1306 display(
-SCREEN_WIDTH,
-SCREEN_HEIGHT,
-&Wire,
--1);
+const uint8_t BTN_A = 10;
+const uint8_t BTN_B = 11;
+const uint8_t BTN_C = 12;
+const uint8_t BTN_D = 13;
 
-Adafruit_MPU6050 mpu;
-int lx;
-int ly;
-int rx;
-int ry;
+const uint8_t SDA_PIN = 21;
+const uint8_t SCL_PIN = 22;
 
-int lxCenter=2048;
-int lyCenter=2048;
+/*=========================
+      OFFSETS
+=========================*/
+int offAX = 0;
+int offAY = 0;
+int offBX = 0;
+int offBY = 0;
 
-int rxCenter=2048;
-int ryCenter=2048;
-float roll;
-float pitch;
+/*=========================
+      FUNCIONES
+=========================*/
 
-float ax;
-float ay;
-float az;
-bool L1;
-bool L2;
-bool R1;
-bool R2;
+int convertirJoystick(int lectura)
+{
+    return map(lectura, 0, 4095, -100, 100);
+}
 
-bool A;
-bool B;
-bool X;
-bool Y;
-void connectWiFi();
-void connectMQTT();
+void conectarMQTT();
 
-void readJoysticks();
-void readButtons();
+void ajustarCentro()
+{
+    offAX = convertirJoystick(analogRead(JOY_A_X));
+    offAY = convertirJoystick(analogRead(JOY_A_Y));
+    offBX = convertirJoystick(analogRead(JOY_B_X));
+    offBY = convertirJoystick(analogRead(JOY_B_Y));
 
-void readMPU();
+    pantalla.clear();
+    pantalla.setCursor(0,0);
+    pantalla.print("Centro listo");
+    delay(1000);
+}
 
-void updateDisplay();
+void iniciarWiFi()
+{
+    WiFi.begin(WIFI_NAME, WIFI_PASS);
 
-void sendMQTT();
+    while (WiFi.status() != WL_CONNECTED)
+    {
+        Serial.print(".");
+        delay(500);
+    }
 
-void calibration();
+    Serial.println();
+    Serial.println("Conexion WiFi OK");
+}
+
+void iniciarPantalla()
+{
+    pantalla.init();
+    pantalla.backlight();
+    pantalla.clear();
+    pantalla.setCursor(0,0);
+    pantalla.print("KAKATA-433");
+    pantalla.setCursor(0,1);
+    pantalla.print("Inicializando");
+}
+
 void setup()
 {
+    Serial.begin(115200);
 
-Serial.begin(115200);
+    iniciarWiFi();
 
-Wire.begin();
+    mqtt.setServer(MQTT_HOST,1883);
 
-pinMode(L1_PIN,INPUT_PULLUP);
-pinMode(L2_PIN,INPUT_PULLUP);
-pinMode(R1_PIN,INPUT_PULLUP);
-pinMode(R2_PIN,INPUT_PULLUP);
+    Wire.begin(SDA_PIN,SCL_PIN);
 
-pinMode(A_PIN,INPUT_PULLUP);
-pinMode(B_PIN,INPUT_PULLUP);
-pinMode(X_PIN,INPUT_PULLUP);
-pinMode(Y_PIN,INPUT_PULLUP);
+    sensorIMU.initialize();
 
-display.begin(
-SSD1306_SWITCHCAPVCC,
-0x3C);
+    if(!sensorIMU.testConnection())
+        Serial.println("Error MPU6050");
 
-display.clearDisplay();
-display.display();
+    pinMode(BTN_A,INPUT_PULLUP);
+    pinMode(BTN_B,INPUT_PULLUP);
+    pinMode(BTN_C,INPUT_PULLUP);
+    pinMode(BTN_D,INPUT_PULLUP);
 
-if(!mpu.begin())
-{
-
-while(true);
-
+    iniciarPantalla();
 }
 
-connectWiFi();
-
-mqtt.setServer(
-MQTT_SERVER,
-MQTT_PORT);
-
-}
 void loop()
 {
+    if(!mqtt.connected())
+        conectarMQTT();
 
-if(!mqtt.connected())
-connectMQTT();
+    mqtt.loop();
 
-mqtt.loop();
+    static unsigned long tiempo = 0;
 
-readJoysticks();
+    if(!digitalRead(BTN_A) && !digitalRead(BTN_B))
+    {
+        if(tiempo == 0)
+            tiempo = millis();
 
-readButtons();
+        if(millis() - tiempo >= 3000)
+        {
+            ajustarCentro();
+            tiempo = 0;
+        }
+    }
+    else
+    {
+        tiempo = 0;
+    }
 
-readMPU();
+    int x1 = convertirJoystick(analogRead(JOY_A_X)) - offAX;
+    int y1 = convertirJoystick(analogRead(JOY_A_Y)) - offAY;
 
-calibration();
+    int x2 = convertirJoystick(analogRead(JOY_B_X)) - offBX;
+    int y2 = convertirJoystick(analogRead(JOY_B_Y)) - offBY;
 
-updateDisplay();
+    bool boton1 = !digitalRead(BTN_A);
+    bool boton2 = !digitalRead(BTN_B);
+    bool boton3 = !digitalRead(BTN_C);
+    bool boton4 = !digitalRead(BTN_D);
 
-sendMQTT();
+    int16_t ax,ay,az,gx,gy,gz;
 
-delay(20);
+    sensorIMU.getMotion6(&ax,&ay,&az,&gx,&gy,&gz);
 
+    String datos = "{";
+    datos += "\"joy0X\":" + String(x1) + ",";
+    datos += "\"joy0Y\":" + String(y1) + ",";
+    datos += "\"joy1X\":" + String(x2) + ",";
+    datos += "\"joy1Y\":" + String(y2) + ",";
+    datos += "\"btn1\":" + String(boton1) + ",";
+    datos += "\"btn2\":" + String(boton2) + ",";
+    datos += "\"btn3\":" + String(boton3) + ",";
+    datos += "\"btn4\":" + String(boton4) + ",";
+    datos += "\"ax\":" + String(ax) + ",";
+    datos += "\"ay\":" + String(ay) + ",";
+    datos += "\"az\":" + String(az) + ",";
+    datos += "\"gx\":" + String(gx) + ",";
+    datos += "\"gy\":" + String(gy) + ",";
+    datos += "\"gz\":" + String(gz);
+    datos += "}";
+
+    mqtt.publish("kakata/control", datos.c_str());
+
+    pantalla.clear();
+
+    pantalla.setCursor(0,0);
+    pantalla.print("X:");
+    pantalla.print(x1);
+    pantalla.print(" Y:");
+    pantalla.print(y1);
+
+    pantalla.setCursor(0,1);
+    pantalla.print("B:");
+    pantalla.print(boton1);
+    pantalla.print(" AX:");
+    pantalla.print(ax/1000);
+
+    delay(500);
 }
-void connectWiFi()
+
+void conectarMQTT()
 {
-
-WiFi.begin(
-WIFI_SSID,
-WIFI_PASSWORD);
-
-while(WiFi.status()!=WL_CONNECTED)
-{
-
-delay(500);
-
+    while(!mqtt.connected())
+    {
+        if(mqtt.connect("ESP32Client"))
+        {
+            mqtt.subscribe("kakata/control");
+        }
+        else
+        {
+            delay(5000);
+        }
+    }
 }
-
-}
-void connectMQTT()
-{
-
-while(!mqtt.connected())
-{
-
-mqtt.connect("ControlRemoto");
-
-delay(500);
-
-}
-
-}
-#ifndef JOYSTICK_H
-#define JOYSTICK_H
-
-extern int lx;
-extern int ly;
-extern int rx;
-extern int ry;
-
-void readJoysticks();
-
-#endif
-#include "joystick.h"
-#include "config.h"
-
-// Estas variables están definidas en main.cpp
-extern int lx;
-extern int ly;
-extern int rx;
-extern int ry;
-
-extern int lxCenter;
-extern int lyCenter;
-extern int rxCenter;
-extern int ryCenter;
-
-// Filtro exponencial
-float flx = 0;
-float fly = 0;
-float frx = 0;
-float fry = 0;
-
-const float alpha = 0.20;
-
-int mapJoystick(int value, int center)
-{
-    int delta = value - center;
-
-    if (delta > 2047) delta = 2047;
-    if (delta < -2048) delta = -2048;
-
-    int salida = (delta * 100) / 2047;
-
-    if (abs(salida) < DEADZONE)
-        salida = 0;
-
-    if (salida > 100) salida = 100;
-    if (salida < -100) salida = -100;
-
-    return salida;
-}
-
-void readJoysticks()
-{
-    flx = alpha * analogRead(LX_PIN) + (1 - alpha) * flx;
-    fly = alpha * analogRead(LY_PIN) + (1 - alpha) * fly;
-    frx = alpha * analogRead(RX_PIN) + (1 - alpha) * frx;
-    fry = alpha * analogRead(RY_PIN) + (1 - alpha) * fry;
-
-    lx = mapJoystick((int)flx, lxCenter);
-    ly = mapJoystick((int)fly, lyCenter);
-    rx = mapJoystick((int)frx, rxCenter);
-    ry = mapJoystick((int)fry, ryCenter);
-}
-#ifndef BUTTONS_H
-#define BUTTONS_H
-
-void readButtons();
-
-#endif
-#include "buttons.h"
-#include "config.h"
-
-extern bool L1;
-extern bool L2;
-extern bool R1;
-extern bool R2;
-
-extern bool A;
-extern bool B;
-extern bool X;
-extern bool Y;
-
-void readButtons()
-{
-    L1 = !digitalRead(L1_PIN);
-    L2 = !digitalRead(L2_PIN);
-
-    R1 = !digitalRead(R1_PIN);
-    R2 = !digitalRead(R2_PIN);
-
-    A = !digitalRead(A_PIN);
-    B = !digitalRead(B_PIN);
-    X = !digitalRead(X_PIN);
-    Y = !digitalRead(Y_PIN);
-}
-#include "joystick.h"
-#include "buttons.h"
-struct ControllerData {
-    int lx;
-    int ly;
-    int rx;
-    int ry;
-
-    float roll;
-    float pitch;
-
-    float ax;
-    float ay;
-    float az;
-
-    bool L1;
-    bool L2;
-    bool R1;
-    bool R2;
-    bool A;
-    bool B;
-    bool X;
-    bool Y;
-};
-
-extern ControllerData control;
