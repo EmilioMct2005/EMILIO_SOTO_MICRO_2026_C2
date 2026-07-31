@@ -1,0 +1,208 @@
+#include <WiFi.h>
+#include <PubSubClient.h>
+#include <Wire.h>
+#include <MPU6050.h>
+#include <LiquidCrystal_I2C.h>
+
+/*=========================
+    CONFIGURACIÓN WIFI
+=========================*/
+const char* WIFI_NAME = "TU_SSID";
+const char* WIFI_PASS = "TU_PASSWORD";
+const char* MQTT_HOST = "test.mosquitto.org";
+
+WiFiClient wifiClient;
+PubSubClient mqtt(wifiClient);
+
+/*=========================
+      OBJETOS
+=========================*/
+MPU6050 sensorIMU;
+LiquidCrystal_I2C pantalla(0x27, 16, 2);
+
+/*=========================
+      PINES
+=========================*/
+const uint8_t JOY_A_X = 4;
+const uint8_t JOY_A_Y = 5;
+const uint8_t JOY_B_X = 6;
+const uint8_t JOY_B_Y = 7;
+
+const uint8_t BTN_A = 10;
+const uint8_t BTN_B = 11;
+const uint8_t BTN_C = 12;
+const uint8_t BTN_D = 13;
+
+const uint8_t SDA_PIN = 21;
+const uint8_t SCL_PIN = 22;
+
+/*=========================
+      OFFSETS
+=========================*/
+int offAX = 0;
+int offAY = 0;
+int offBX = 0;
+int offBY = 0;
+
+/*=========================
+      FUNCIONES
+=========================*/
+
+int convertirJoystick(int lectura)
+{
+    return map(lectura, 0, 4095, -100, 100);
+}
+
+void conectarMQTT();
+
+void ajustarCentro()
+{
+    offAX = convertirJoystick(analogRead(JOY_A_X));
+    offAY = convertirJoystick(analogRead(JOY_A_Y));
+    offBX = convertirJoystick(analogRead(JOY_B_X));
+    offBY = convertirJoystick(analogRead(JOY_B_Y));
+
+    pantalla.clear();
+    pantalla.setCursor(0,0);
+    pantalla.print("Centro listo");
+    delay(1000);
+}
+
+void iniciarWiFi()
+{
+    WiFi.begin(WIFI_NAME, WIFI_PASS);
+
+    while (WiFi.status() != WL_CONNECTED)
+    {
+        Serial.print(".");
+        delay(500);
+    }
+
+    Serial.println();
+    Serial.println("Conexion WiFi OK");
+}
+
+void iniciarPantalla()
+{
+    pantalla.init();
+    pantalla.backlight();
+    pantalla.clear();
+    pantalla.setCursor(0,0);
+    pantalla.print("KAKATA-433");
+    pantalla.setCursor(0,1);
+    pantalla.print("Inicializando");
+}
+
+void setup()
+{
+    Serial.begin(115200);
+
+    iniciarWiFi();
+
+    mqtt.setServer(MQTT_HOST,1883);
+
+    Wire.begin(SDA_PIN,SCL_PIN);
+
+    sensorIMU.initialize();
+
+    if(!sensorIMU.testConnection())
+        Serial.println("Error MPU6050");
+
+    pinMode(BTN_A,INPUT_PULLUP);
+    pinMode(BTN_B,INPUT_PULLUP);
+    pinMode(BTN_C,INPUT_PULLUP);
+    pinMode(BTN_D,INPUT_PULLUP);
+
+    iniciarPantalla();
+}
+
+void loop()
+{
+    if(!mqtt.connected())
+        conectarMQTT();
+
+    mqtt.loop();
+
+    static unsigned long tiempo = 0;
+
+    if(!digitalRead(BTN_A) && !digitalRead(BTN_B))
+    {
+        if(tiempo == 0)
+            tiempo = millis();
+
+        if(millis() - tiempo >= 3000)
+        {
+            ajustarCentro();
+            tiempo = 0;
+        }
+    }
+    else
+    {
+        tiempo = 0;
+    }
+
+    int x1 = convertirJoystick(analogRead(JOY_A_X)) - offAX;
+    int y1 = convertirJoystick(analogRead(JOY_A_Y)) - offAY;
+
+    int x2 = convertirJoystick(analogRead(JOY_B_X)) - offBX;
+    int y2 = convertirJoystick(analogRead(JOY_B_Y)) - offBY;
+
+    bool boton1 = !digitalRead(BTN_A);
+    bool boton2 = !digitalRead(BTN_B);
+    bool boton3 = !digitalRead(BTN_C);
+    bool boton4 = !digitalRead(BTN_D);
+
+    int16_t ax,ay,az,gx,gy,gz;
+
+    sensorIMU.getMotion6(&ax,&ay,&az,&gx,&gy,&gz);
+
+    String datos = "{";
+    datos += "\"joy0X\":" + String(x1) + ",";
+    datos += "\"joy0Y\":" + String(y1) + ",";
+    datos += "\"joy1X\":" + String(x2) + ",";
+    datos += "\"joy1Y\":" + String(y2) + ",";
+    datos += "\"btn1\":" + String(boton1) + ",";
+    datos += "\"btn2\":" + String(boton2) + ",";
+    datos += "\"btn3\":" + String(boton3) + ",";
+    datos += "\"btn4\":" + String(boton4) + ",";
+    datos += "\"ax\":" + String(ax) + ",";
+    datos += "\"ay\":" + String(ay) + ",";
+    datos += "\"az\":" + String(az) + ",";
+    datos += "\"gx\":" + String(gx) + ",";
+    datos += "\"gy\":" + String(gy) + ",";
+    datos += "\"gz\":" + String(gz);
+    datos += "}";
+
+    mqtt.publish("kakata/control", datos.c_str());
+
+    pantalla.clear();
+
+    pantalla.setCursor(0,0);
+    pantalla.print("X:");
+    pantalla.print(x1);
+    pantalla.print(" Y:");
+    pantalla.print(y1);
+
+    pantalla.setCursor(0,1);
+    pantalla.print("B:");
+    pantalla.print(boton1);
+    pantalla.print(" AX:");
+    pantalla.print(ax/1000);
+
+    delay(500);
+}
+
+void conectarMQTT()
+{
+    while(!mqtt.connected())
+    {
+        if(mqtt.connect("ESP32Client"))
+        {
+            mqtt.subscribe("kakata/control");
+        }
+        else
+        {
+            delay(5000);
+        }
+    }
+}
