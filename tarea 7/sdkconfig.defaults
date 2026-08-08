@@ -1,0 +1,2 @@
+# Resolucion de 1 ms para la tarea que detecta los botones.
+CONFIG_FREERTOS_HZ=1000

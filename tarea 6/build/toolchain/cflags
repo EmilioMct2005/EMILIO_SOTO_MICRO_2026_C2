@@ -1,0 +1,6 @@
+-Wno-frame-address
+-mlongcalls
+-fno-builtin-memcpy
+-fno-builtin-memset
+-fno-builtin-bzero
+"-specs=C:/Users/User/Desktop/porton_espidf_v2_3_estado_inicio/build/specs/picolibc.specs"
